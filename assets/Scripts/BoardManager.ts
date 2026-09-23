@@ -1,38 +1,57 @@
-import { _decorator, Component, Node, UITransform, Prefab, instantiate, EventMouse, Vec3, tween } from 'cc';
-import { Board } from './Board';
+import { _decorator, Component, Node, UITransform, Prefab, instantiate, EventMouse, Vec3, tween, UIOpacity, Animation } from 'cc';
+import { Board } from './BoardDraw';
 const { ccclass, property } = _decorator;
 
-@ccclass('BoardInput')
-export class BoardInput extends Component {
+export interface Cell {
+    row: number;
+    col: number;
+}
+
+const EMPTY = -1;
+const COLOR_COUNT = 6;
+const MIN_MATCH = 5;
+
+const MODE_HORIZONTAL = 0; 
+const MODE_VERTICAL = 1;   
+const MODE_DIAGONAL = 2;  
+
+@ccclass('BoardSpawner')
+export class BoardSpawner extends Component {
     @property(Board)
     board: Board = null;
 
-    @property(Prefab)
-    BallPrefab: Prefab = null;
+    @property([Prefab])
+    BallPrefabs: Prefab[] = [];
 
     @property
-    ballScale: number = 0.8;     
+    ballScale: number = 0.9;
 
     @property
-    previewScale: number = 0.4;   
+    previewScale: number = 0.4;
 
     @property
-    animDuration: number = 0.3;
+    animDuration: number = 0.1;
 
-    private occupied: boolean[][] = [];
-    private balls: Node[] = [];
-    private previewBalls: Node[] = [];
+    @property
+    moveDuration: number = 0.3;
+
+    public haveBall: number[][] = [];
+    public balls: Node[] = [];
+    public previewBalls: Node[] = [];
+
+    private isWaiting: boolean = false;
+    private selectedBall: Node = null;
+    private overlayBall: Node = null;
+    private lockedOverlayPos: Vec3 | null = null;
 
     onLoad() {
         this.board = this.board || this.getComponent(Board);
         const size = this.board.boardSize;
-        this.occupied = Array.from({ length: size }, () => new Array(size).fill(false));
+        this.haveBall = Array.from({ length: size }, () => new Array(size).fill(EMPTY));
 
         this.node.on(Node.EventType.MOUSE_DOWN, this.onMouseDown, this);
 
         this.spawnRandom(7);
-
-
         this.refillPreview();
     }
 
@@ -40,72 +59,261 @@ export class BoardInput extends Component {
         this.node.off(Node.EventType.MOUSE_DOWN, this.onMouseDown, this);
     }
 
-    private onMouseDown(event: EventMouse) {
-        if (event.getButton() === EventMouse.BUTTON_LEFT) {
-            this.spawnFromPreview();
-        } else if (event.getButton() === EventMouse.BUTTON_RIGHT) {
-            this.removeRandom(3);
+    lateUpdate(dt: number) {
+        if (this.overlayBall && this.overlayBall.isValid && this.lockedOverlayPos) {
+            this.overlayBall.setPosition(this.lockedOverlayPos);
         }
     }
 
+    private onMouseDown(event: EventMouse) {
+        if (event.getButton() !== EventMouse.BUTTON_LEFT) return;
 
-    private spawnFromPreview() {
+        const cell = this.getCellFromMouse(event);
+        if (!cell) return;
+
+        if (!this.isWaiting) {
+            this.trySelect(cell);
+        } else {
+            this.tryMoveTo(cell);
+        }
+    }
+
+    //  CHỌN QUẢ 
+    private trySelect(cell: Cell) {
+        const ball = this.getBallAt(cell.row, cell.col);
+        if (!ball) return;
+
+        this.selectedBall = ball;
+        this.isWaiting = true;
+
+        this.setNodeOpacity(ball, 0);
+
+        const color = ball["__color"];
+        const overlay = instantiate(this.BallPrefabs[color]);
+        overlay.setParent(this.node);
+        overlay.setPosition(ball.position);
+        overlay.setScale(ball.scale);
+        overlay["__row"] = ball["__row"];
+        overlay["__col"] = ball["__col"];
+        overlay["__color"] = color;
+
+        this.lockedOverlayPos = ball.position.clone();
+        const anim = overlay.getComponent(Animation);
+        if (anim) {
+            anim.play('bounce');
+        }
+
+        this.overlayBall = overlay;
+    }
+
+    //  DI CHUYỂN 
+    private tryMoveTo(cell: Cell) {
+        if (!this.selectedBall || !this.selectedBall.isValid) {
+            this.cancelWaiting();
+            return;
+        }
+
+        if (this.selectedBall["__row"] === cell.row &&
+            this.selectedBall["__col"] === cell.col) {
+            this.cancelWaiting();
+            return;
+        }
+
+        if (this.haveBall[cell.row][cell.col] !== EMPTY) return;
+
+        const from: Cell = {
+            row: this.selectedBall["__row"],
+            col: this.selectedBall["__col"]
+        };
+
+        if (!this.hasPath(from, cell)) return;
+
+        const color = this.selectedBall["__color"];
+
+        this.haveBall[from.row][from.col] = EMPTY;
+        this.haveBall[cell.row][cell.col] = color;
+
+        this.selectedBall["__row"] = cell.row;
+        this.selectedBall["__col"] = cell.col;
+
+        if (this.overlayBall && this.overlayBall.isValid) {
+            const anim = this.overlayBall.getComponent(Animation);
+            if (anim) anim.stop();
+            this.overlayBall.destroy();
+        }
+        this.overlayBall = null;
+        this.lockedOverlayPos = null;
+
+        this.setNodeOpacity(this.selectedBall, 255);
+
         const boardSize = this.board.getComponent(UITransform);
         const cellSize = boardSize.width / this.board.boardSize;
+        const x = -boardSize.width / 2 + (cell.col + 0.5) * cellSize;
+        const y = -boardSize.height / 2 + (cell.row + 0.5) * cellSize;
 
-        for (const small of this.previewBalls) {
-            if (!small || !small.isValid) continue;
+        const ball = this.selectedBall;
+        this.selectedBall = null;
+        this.isWaiting = false;
 
-        
-            const ballUT = small.getComponent(UITransform);
-            let scaleToFit = this.ballScale;
-            if (ballUT && ballUT.width > 0 && ballUT.height > 0) {
-                scaleToFit = Math.min(cellSize / ballUT.width, cellSize / ballUT.height) * this.ballScale;
-            }
-
-
-            tween(small)
-                .to(this.animDuration, { scale: new Vec3(scaleToFit, scaleToFit, 1) })
-                .start();
-
-            this.balls.push(small);
-        }
-
-        this.previewBalls = [];
-
-        this.refillPreview();
+        tween(ball)
+            .to(this.moveDuration, { position: new Vec3(x, y, 0) })
+            .call(() => {
+                this.checkAndRemoveConnected();
+                this.upgradePreviews();
+            })
+            .start();
     }
 
+    //  HỦY CHỜ 
+    private cancelWaiting() {
+        if (!this.isWaiting) return;
 
+        if (this.overlayBall && this.overlayBall.isValid) {
+            const anim = this.overlayBall.getComponent(Animation);
+            if (anim) anim.stop();
+            this.overlayBall.destroy();
+        }
+        this.overlayBall = null;
+        this.lockedOverlayPos = null;
+
+        if (this.selectedBall && this.selectedBall.isValid) {
+            this.setNodeOpacity(this.selectedBall, 255);
+        }
+
+        this.selectedBall = null;
+        this.isWaiting = false;
+    }
+
+    //  TÌM ĐƯỜNG 
+    private hasPath(from: Cell, to: Cell): boolean {
+        if (from.row === to.row && from.col === to.col) return false;
+
+        const size = this.board.boardSize;
+        const visited: boolean[][] = Array.from({ length: size }, () => new Array(size).fill(false));
+
+        return this.dfs(visited, from, to);
+    }
+
+    private dfs(visited: boolean[][], from: Cell, to: Cell): boolean {
+        if (from.row === to.row && from.col === to.col) return true;
+
+        visited[from.row][from.col] = true;
+
+        const dirs = [
+            { dr: -1, dc: 0 },
+            { dr: 1, dc: 0 },
+            { dr: 0, dc: -1 },
+            { dr: 0, dc: 1 }
+        ];
+
+        const size = this.board.boardSize;
+
+        for (const d of dirs) {
+            const nr = from.row + d.dr;
+            const nc = from.col + d.dc;
+
+            if (nr < 0 || nr >= size || nc < 0 || nc >= size) continue;
+            if (visited[nr][nc]) continue;
+
+            const isTarget = (nr === to.row && nc === to.col);
+            if (this.haveBall[nr][nc] !== EMPTY && !isTarget) continue;
+
+            if (this.dfs(visited, { row: nr, col: nc }, to)) return true;
+        }
+
+        return false;
+    }
+
+    //  KIỂM TRA THÀNH PHẦN LIÊN THÔNG 
+    public checkAndRemoveConnected() {
+        this.scanAndRemove(MODE_HORIZONTAL);
+        this.scanAndRemove(MODE_VERTICAL);
+        this.scanAndRemove(MODE_DIAGONAL);
+    }
+
+    private scanAndRemove(mode: number) {
+        const size = this.board.boardSize;
+        const visited: boolean[][] = Array.from({ length: size }, () => new Array(size).fill(false));
+
+        for (let r = 0; r < size; r++) {
+            for (let c = 0; c < size; c++) {
+                if (this.haveBall[r][c] === EMPTY) continue;
+                if (visited[r][c]) continue;
+
+                const group: Cell[] = [];
+                const color = this.haveBall[r][c];
+                this.checkBall(r, c, color, visited, group, mode);
+
+                if (group.length >= MIN_MATCH) {
+                    for (const cell of group) {
+                        this.removeBallAt(cell.row, cell.col);
+                    }
+                }
+            }
+        }
+    }
+
+    // ÉO BT NHƯNG MÀ LÀ TÌM BÓNG ĐỂ XOÁ
+    private checkBall(
+        row: number,
+        col: number,
+        color: number,
+        visited: boolean[][],
+        group: Cell[],
+        mode: number
+    ) {
+        const size = this.board.boardSize;
+
+        if (row < 0 || row >= size || col < 0 || col >= size) return;
+        if (visited[row][col]) return;
+        if (this.haveBall[row][col] !== color) return;
+
+        visited[row][col] = true;
+        group.push({ row, col });
+
+        if (mode === MODE_HORIZONTAL) {
+            this.checkBall(row, col - 1, color, visited, group, mode);
+            this.checkBall(row, col + 1, color, visited, group, mode);
+        } else if (mode === MODE_VERTICAL) {
+            this.checkBall(row - 1, col, color, visited, group, mode);
+            this.checkBall(row + 1, col, color, visited, group, mode);
+        } else {
+            this.checkBall(row - 1, col - 1, color, visited, group, mode);
+            this.checkBall(row - 1, col + 1, color, visited, group, mode);
+            this.checkBall(row + 1, col - 1, color, visited, group, mode);
+            this.checkBall(row + 1, col + 1, color, visited, group, mode);
+        }
+    }
+
+    //  SPAWN 
     private spawnRandom(count: number) {
         const size = this.board.boardSize;
-        const empty: { row: number, col: number }[] = [];
+        const empty: Cell[] = [];
         for (let r = 0; r < size; r++)
             for (let c = 0; c < size; c++)
-                if (!this.occupied[r][c]) empty.push({ row: r, col: c });
+                if (this.haveBall[r][c] === EMPTY) empty.push({ row: r, col: c });
 
         const n = Math.min(count, empty.length);
         for (let i = 0; i < n; i++) {
             const idx = Math.floor(Math.random() * empty.length);
             const { row, col } = empty.splice(idx, 1)[0];
-            this.occupied[row][col] = true;
-            this.spawnBallAt(row, col);
+
+            const color = Math.floor(Math.random() * COLOR_COUNT);
+            this.haveBall[row][col] = color;
+            this.spawnBallAt(row, col, color);
         }
     }
 
-
     private refillPreview() {
-        if (!this.BallPrefab) return;
+        if (!this.BallPrefabs || this.BallPrefabs.length === 0) return;
 
         const size = this.board.boardSize;
         const boardSize = this.board.getComponent(UITransform);
         const cellSize = boardSize.width / this.board.boardSize;
-
-        // Tìm ô trống
-        const empty: { row: number, col: number }[] = [];
+        const empty: Cell[] = [];
         for (let r = 0; r < size; r++)
             for (let c = 0; c < size; c++)
-                if (!this.occupied[r][c]) empty.push({ row: r, col: c });
+                if (this.haveBall[r][c] === EMPTY) empty.push({ row: r, col: c });
 
         const n = Math.min(3, empty.length);
 
@@ -113,9 +321,10 @@ export class BoardInput extends Component {
             const idx = Math.floor(Math.random() * empty.length);
             const { row, col } = empty.splice(idx, 1)[0];
 
-            this.occupied[row][col] = true;
+            const color = Math.floor(Math.random() * COLOR_COUNT);
+            this.haveBall[row][col] = color;
 
-            const small = instantiate(this.BallPrefab);
+            const small = instantiate(this.BallPrefabs[color]);
             small.setParent(this.node);
 
             const x = -boardSize.width / 2 + (col + 0.5) * cellSize;
@@ -133,27 +342,15 @@ export class BoardInput extends Component {
 
             small["__row"] = row;
             small["__col"] = col;
+            small["__color"] = color;
 
             this.previewBalls.push(small);
         }
     }
 
-
-    private removeRandom(count: number) {
-        const n = Math.min(count, this.balls.length);
-        for (let i = 0; i < n; i++) {
-            const idx = Math.floor(Math.random() * this.balls.length);
-            const ball = this.balls.splice(idx, 1)[0];
-
-            this.occupied[ball["__row"]][ball["__col"]] = false;
-            ball.destroy();
-        }
-    }
-
-
-    private spawnBallAt(row: number, col: number) {
-        if (!this.BallPrefab) return;
-        const ball = instantiate(this.BallPrefab);
+    private spawnBallAt(row: number, col: number, color: number) {
+        if (!this.BallPrefabs || !this.BallPrefabs[color]) return;
+        const ball = instantiate(this.BallPrefabs[color]);
 
         const boardSize = this.board.getComponent(UITransform);
         const cellSize = boardSize.width / this.board.boardSize;
@@ -172,9 +369,96 @@ export class BoardInput extends Component {
 
         ball["__row"] = row;
         ball["__col"] = col;
+        ball["__color"] = color;
 
         this.balls.push(ball);
     }
 
+    //  PHÓNG TO
+    public upgradePreviews() {
+        const boardSize = this.board.getComponent(UITransform);
+        const cellSize = boardSize.width / this.board.boardSize;
 
+        for (const small of this.previewBalls) {
+            if (!small || !small.isValid) continue;
+
+            const ballUT = small.getComponent(UITransform);
+            let scaleToFit = this.ballScale;
+            if (ballUT && ballUT.width > 0 && ballUT.height > 0) {
+                scaleToFit = Math.min(cellSize / ballUT.width, cellSize / ballUT.height) * this.ballScale;
+            }
+
+            tween(small)
+                .to(this.animDuration, { scale: new Vec3(scaleToFit, scaleToFit, 1) })
+                .start();
+
+            this.balls.push(small);
+        }
+
+        this.previewBalls = [];
+        this.refillPreview();
+    }
+
+    //  XOÁ BÓNG 
+    public removeBallAt(row: number, col: number) {
+        for (let i = 0; i < this.balls.length; i++) {
+            const b = this.balls[i];
+            if (b["__row"] === row && b["__col"] === col) {
+                this.balls.splice(i, 1);
+                this.haveBall[row][col] = EMPTY;
+                if (b && b.isValid) b.destroy();
+                return;
+            }
+        }
+
+        for (let i = 0; i < this.previewBalls.length; i++) {
+            const b = this.previewBalls[i];
+            if (b["__row"] === row && b["__col"] === col) {
+                this.previewBalls.splice(i, 1);
+                this.haveBall[row][col] = EMPTY;
+                if (b && b.isValid) b.destroy();
+                return;
+            }
+        }
+    }
+
+
+    public getColorAt(row: number, col: number): number {
+        return this.haveBall[row][col];
+    }
+
+    public isOccupied(row: number, col: number): boolean {
+        return this.haveBall[row][col] !== EMPTY;
+    }
+
+    private setNodeOpacity(node: Node, opacity: number) {
+        let uiOpacity = node.getComponent(UIOpacity);
+        if (!uiOpacity) uiOpacity = node.addComponent(UIOpacity);
+        uiOpacity.opacity = opacity;
+    }
+
+    private getCellFromMouse(event: EventMouse): Cell | null {
+        const uiTransform = this.node.getComponent(UITransform);
+        const boardSize = this.board.getComponent(UITransform);
+        if (!uiTransform || !boardSize) return null;
+
+        const uiPos = event.getUILocation();
+        const worldPos = new Vec3(uiPos.x, uiPos.y, 0);
+        const localPos = uiTransform.convertToNodeSpaceAR(worldPos);
+
+        const cellSize = boardSize.width / this.board.boardSize;
+        const col = Math.floor((localPos.x + boardSize.width / 2) / cellSize);
+        const row = Math.floor((localPos.y + boardSize.height / 2) / cellSize);
+
+        const size = this.board.boardSize;
+        if (row < 0 || row >= size || col < 0 || col >= size) return null;
+        return { row, col };
+    }
+
+    private getBallAt(row: number, col: number): Node | null {
+        for (const b of this.balls) {
+            if (b["__row"] === row && b["__col"] === col) return b;
+        }
+        return null;
+    }
 }
