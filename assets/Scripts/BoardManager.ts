@@ -38,7 +38,7 @@ export class BoardSpawner extends Component {
     moveDuration: number = 0.3;
 
     @property
-    maxHistory: number = 50;
+    maxHistory: number = 100;
 
     public haveBall: number[][] = [];
     public balls: Node[] = [];
