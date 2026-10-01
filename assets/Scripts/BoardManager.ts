@@ -199,7 +199,7 @@ export class BoardSpawner extends Component {
         this.isWaiting = false;
     }
 
-    //  BFS
+    //  TÌM ĐƯỜNG ĐANG ĐỂ BFS 
     public findPath(from: Cell, to: Cell): Cell[] | null {
         if (from.row === to.row && from.col === to.col) return null;
 
@@ -242,10 +242,13 @@ export class BoardSpawner extends Component {
             for (const d of dirs) {
                 const nr = current.row + d.dr;
                 const nc = current.col + d.dc;
+
                 if (nr < 0 || nr >= size || nc < 0 || nc >= size) continue;
                 if (visited[nr][nc]) continue;
+
                 const isTarget = (nr === to.row && nc === to.col);
                 if (this.haveBall[nr][nc] !== EMPTY && !isTarget) continue;
+
                 visited[nr][nc] = true;
                 parent[nr][nc] = current;
                 queue.push({ row: nr, col: nc });
