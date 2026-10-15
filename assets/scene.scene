@@ -587,7 +587,6 @@
     "previewScale": 0.4,
     "animDuration": 0.3,
     "moveDuration": 0.3,
-    "maxHistory": 20,
     "ScoreLabel": {
       "__id__": 15
     },

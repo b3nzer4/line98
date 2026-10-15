@@ -8,6 +8,7 @@
   ],
   "subMetas": {},
   "userData": {
-    "syncNodeName": "ball_orange"
+    "syncNodeName": "ball_orange",
+    "persistent": true
   }
 }
